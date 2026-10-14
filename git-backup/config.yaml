@@ -1,8 +1,8 @@
-name: Git Config Backup
-version: "1.0.13"
+name: Git Config Backup (Filtering Test)
+version: "1.0.14-test.1"
 slug: git_config_backup
 description: Automatically backup Home Assistant configuration to a Git repository
-url: "https://github.com/sttts/ha-git-backup"
+url: "https://github.com/pbrickles/ha-git-backup"
 arch:
   - armhf
   - armv7
@@ -48,7 +48,6 @@ options:
     - "home-assistant.log*"
     - "OZW_Log.txt"
     - "tts/*"
-    - ".storage/*"
     - "backups/*"
     - ".cloud/*"
   include_patterns:
@@ -98,5 +97,4 @@ panel_title: Git Backup
 homeassistant_api: true
 hassio_api: true
 
-# Labels
-image: "ghcr.io/sttts/ha-git-backup/{arch}"
+# Build locally from this fork; no upstream container image is used.

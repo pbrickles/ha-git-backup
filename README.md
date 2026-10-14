@@ -1,3 +1,22 @@
+> **Filtering test fork — v1.0.14-test.1**
+>
+> Add `https://github.com/pbrickles/ha-git-backup` in Home Assistant:
+> Settings → Add-ons → Add-on Store → ⋮ → Repositories. Install
+> **Git Config Backup (Filtering Test)** from this repository. Home Assistant
+> builds the add-on locally from the patched source; the initial installation
+> may take a few minutes.
+>
+> Stop the upstream add-on before starting this test add-on. Copy its settings
+> manually; this separate repository has separate add-on data and SSH keys.
+> Add the test add-on's public SSH key to your Git provider if using SSH.
+> Use a dedicated backup branch (for example `filtering-test`) for testing.
+> Set `backup_on_start: false` while configuring filters, then trigger a manual
+> backup after reviewing them. If your saved exclusions contain `.storage/*`,
+> remove it to retain Lovelace and core.config backups.
+>
+> See [filtering documentation](git-backup/DOCS.md#filtering-semantics) for
+> precedence, allowlists, and removal of previously tracked excluded files.
+
 # Home Assistant Git Config Backup
 
 [![Build and Publish](https://github.com/sttts/ha-git-backup/actions/workflows/build.yaml/badge.svg)](https://github.com/sttts/ha-git-backup/actions/workflows/build.yaml)

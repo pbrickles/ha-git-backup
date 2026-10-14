@@ -1,5 +1,22 @@
 # Changelog
 
+## [1.0.14-test.1] - 2026-10-14
+
+### Fixed
+
+- Enforce configured file filters, with exclusions taking precedence and nested directory inclusion.
+- Remove previously backed-up excluded files without changing source files or Git history.
+- Preserve repository ignore rules and abort before staging on synchronization failure.
+
+### Added
+
+- Local integration tests and Linux CI for filtering and deletion behavior.
+
+### Changed
+
+- Test fork builds locally in Home Assistant instead of installing upstream container images.
+- Remove the conflicting default `.storage/*` user exclusion; built-in storage protection remains.
+
 ## [1.0.13] - 2025-01-21
 
 ### Fixed

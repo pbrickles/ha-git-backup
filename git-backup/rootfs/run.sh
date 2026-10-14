@@ -215,76 +215,78 @@ setup_repository() {
 }
 
 # ------------------------------------------------------------------------------
-# Generate .gitignore
+# Build synchronization filters
 # ------------------------------------------------------------------------------
-generate_gitignore() {
-    cat > "$REPO_DIR/.gitignore" << 'EOF'
-# Home Assistant Git Backup - Auto-generated .gitignore
+build_rsync_args() {
+    RSYNC_ARGS=(-av --delete)
+    local pattern
+    local -a includes=()
 
-# Database files
-*.db
-*.db-shm
-*.db-wal
+    # Hide source Git metadata and protect destination metadata, even when a
+    # user requests everything. Preserve the repository owner's root .gitignore.
+    RSYNC_ARGS+=("--filter=P .git" "--filter=P **/.git/***"
+                 "--filter=H .git" "--filter=H **/.git/***"
+                 "--filter=P /.gitignore" "--filter=H /.gitignore")
 
-# Log files
-*.log
-home-assistant.log*
-OZW_Log.txt
-
-# Cache and temporary files
-__pycache__/
-*.py[cod]
-.cache/
-*.tmp
-
-# Backups
-backups/
-backup/
-
-# TTS cache
-tts/
-
-# Cloud connection data
-.cloud/
-
-# Storage - exclude all except lovelace dashboards and core.config
-.storage/*
-!.storage/lovelace*
-!.storage/core.config
-
-# Node-RED credentials
-flows_cred.json
-
-# ESPHome secrets
-esphome/secrets.yaml
-
-# Large media files
-*.mp4
-*.mp3
-*.wav
-*.avi
-*.mkv
-
-# IDE files
-.vscode/
-.idea/
-*.swp
-*.swo
-*~
-
-# OS files
-.DS_Store
-Thumbs.db
-EOF
-
-    # Add user-defined exclude patterns
-    echo "" >> "$REPO_DIR/.gitignore"
-    echo "# User-defined exclude patterns" >> "$REPO_DIR/.gitignore"
+    # Explicit exclusions win on both sides: hide from the sender and mark as
+    # deletable on the receiver. Descendants must also be deletable when the
+    # allowlist's final exclusion would otherwise protect them.
     while IFS= read -r pattern; do
-        if [ -n "$pattern" ]; then
-            echo "$pattern" >> "$REPO_DIR/.gitignore"
-        fi
+        [ -n "$pattern" ] || continue
+        add_rsync_exclusion "$pattern"
     done < <(get_config_array "exclude_patterns")
+
+    # Protections formerly split between rsync and the generated .gitignore.
+    for pattern in '*.db' '*.db-shm' '*.db-wal' '*.log' 'home-assistant.log*' \
+        'OZW_Log.txt' 'tts/' 'backups/' 'backup/' '.cloud/' '__pycache__/' \
+        '*.py[cod]' '.cache/' '*.tmp' 'flows_cred.json' 'esphome/secrets.yaml' \
+        '*.mp4' '*.mp3' '*.wav' '*.avi' '*.mkv' '.vscode/' '.idea/' \
+        '*.swp' '*.swo' '*~' '.DS_Store' 'Thumbs.db'; do
+        add_rsync_exclusion "$pattern"
+    done
+
+    # Keep the historical storage exceptions, below explicit user exclusions.
+    RSYNC_ARGS+=("--include=/.storage/lovelace*" "--include=/.storage/core.config")
+    add_rsync_exclusion '/.storage/*'
+
+    while IFS= read -r pattern; do
+        # Legacy defaults used gitignore negation here to mean inclusion.
+        pattern="${pattern#!}"
+        [ -n "$pattern" ] || continue
+        includes+=("$pattern")
+        case "$pattern" in
+            */)
+                if [[ "${pattern%/}" == */* ]]; then
+                    includes+=("${pattern}***")
+                else
+                    includes+=("**/${pattern}***")
+                fi
+                ;;
+            */\*) includes+=("${pattern%\*}***") ;;
+        esac
+    done < <(get_config_array "include_patterns")
+
+    for pattern in "${includes[@]}"; do
+        RSYNC_ARGS+=("--include=$pattern")
+    done
+    if [ "${#includes[@]}" -gt 0 ]; then
+        # Traverse parents, but protect nonmatching files on the receiver.
+        # Narrowing an allowlist therefore does not erase older backups.
+        RSYNC_ARGS+=("--include=*/" "--exclude=*")
+    fi
+    log_info "File filtering: ${#includes[@]} inclusion rules; built-in and configured exclusions active"
+}
+
+add_rsync_exclusion() {
+    local pattern="$1"
+    local descendants="${pattern%/}/***"
+    # A basename (including a directory name with a trailing slash) matches
+    # at any depth. Preserve that property for the descendant deletion rule.
+    if [[ "${pattern%/}" != */* ]]; then
+        descendants="**/$descendants"
+    fi
+    RSYNC_ARGS+=("--filter=R $pattern" "--filter=H $pattern"
+                 "--filter=R $descendants" "--filter=H $descendants")
 }
 
 # ------------------------------------------------------------------------------
@@ -326,30 +328,15 @@ do_backup() {
 
     cd "$REPO_DIR"
 
-    # Generate/update .gitignore
-    generate_gitignore
-
-    # Sync configuration files using rsync
+    # File selection is independent of Git's ignore rules.
+    local -a RSYNC_ARGS=()
+    build_rsync_args
     log_info "Syncing configuration from $HA_CONFIG..."
-
-    rsync -av --delete \
-        --exclude='.git/' \
-        --exclude='*.db' \
-        --exclude='*.db-shm' \
-        --exclude='*.db-wal' \
-        --exclude='*.log' \
-        --exclude='home-assistant.log*' \
-        --exclude='tts/' \
-        --exclude='backups/' \
-        --exclude='.cloud/' \
-        --exclude='__pycache__/' \
-        --include='.storage/lovelace*' \
-        --include='.storage/core.config' \
-        --exclude='.storage/*' \
-        --exclude='OZW_Log.txt' \
-        "$HA_CONFIG/" "$REPO_DIR/" 2>/dev/null || {
-            log_warn "rsync had warnings, continuing..."
-        }
+    if ! rsync "${RSYNC_ARGS[@]}" "$HA_CONFIG/" "$REPO_DIR/"; then
+        log_error "Configuration synchronization failed; backup aborted"
+        update_status "error" "Configuration synchronization failed"
+        return 1
+    fi
 
     # Stage all changes
     git add -A

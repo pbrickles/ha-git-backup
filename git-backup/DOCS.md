@@ -142,6 +142,65 @@ This design allows normal editing activity while preventing infinite commit loop
 | `exclude_patterns` | *(see below)* | Gitignore-style patterns for files to exclude |
 | `include_patterns` | *(see below)* | Patterns for files to include |
 
+### Filtering semantics
+
+File selection is enforced by rsync before Git staging, independently of
+`.gitignore`. Exclusions always take precedence over inclusions. Built-in
+protections cannot be overridden by an inclusion.
+
+- An empty or missing `include_patterns` list backs up all files except configured
+  exclusions and built-in protections.
+- A non-empty list is an allowlist. Only matching files are copied. Parent
+  directories are traversed automatically; unmatched empty directories may be
+  created but Git does not track them.
+- `themes/*`, `custom_components/*`, and similar patterns include the entire
+  directory tree, including files several levels deep. A trailing `/` also
+  includes a complete directory tree.
+- Patterns without a slash, such as `*.yaml`, match names at any depth. Patterns
+  containing a slash are relative to `/config`; a leading `/` anchors a pattern
+  at that root. A trailing `/` on an exclusion excludes a directory and its
+  descendants at any depth when no other slash is present.
+- Patterns use rsync wildcards: `*`, `?`, character classes, and `**` for matching
+  across directory boundaries. Quote wildcard patterns in YAML. Spaces are
+  literal and supported. These are individual patterns, not `.gitignore` lines:
+  comments, negation in `exclude_patterns`, and ordered re-inclusion are not
+  supported. For compatibility, a leading `!` in `include_patterns` is stripped
+  and treated as an inclusion, as intended by the old storage defaults.
+
+The Lovelace `.storage/lovelace*` files and `.storage/core.config` are included
+alongside any allowlist. Other `.storage` contents remain protected. Explicit
+user exclusions, including `.storage/*`, override these exceptions.
+
+**Upgrade consideration:** Older installations may retain `.storage/*` in their
+configured exclusion list. Remove that entry to retain Lovelace and core.config
+backups; the built-in storage restriction already protects all other storage
+files. New defaults omit this conflicting entry. Inclusion patterns previously
+had no effect; enabling them now means files outside the configured allowlist
+will stop updating.
+
+### Deletions and existing repositories
+
+When a previously tracked file becomes explicitly excluded (or matches a built-in
+protection), the next successful backup removes it from the backup working tree
+and stages its deletion. Originals in `/config` are never removed. Existing Git
+history is not rewritten, so earlier commits still contain that file.
+
+Deleting a source file that matches the active selection deletes its backup.
+Narrowing an allowlist **retains** older backup files outside that allowlist,
+without updating them or reflecting subsequent source deletions. To remove those
+files from the branch, add explicit exclusions. This avoids erasing backups when
+an inclusion is temporarily changed.
+
+Git metadata named `.git` is never copied or deleted, including nested metadata.
+The repository's root `.gitignore` is also left untouched: the add-on no longer
+generates it or copies `/config/.gitignore` over it. Existing ignore rules remain
+an additional Git staging restriction, so an ignored untracked file may be copied
+without being committed. Review any old generated ignore file manually if its
+rules no longer suit your repository. Changing filter options alone does not
+rewrite `.gitignore`; commits occur only when tracked content changes.
+
+Synchronization errors abort the backup before staging or committing.
+
 ## What Gets Backed Up?
 
 ### Included by Default
@@ -161,7 +220,13 @@ This design allows normal editing activity while preventing infinite commit loop
 | `tts/` | Text-to-speech cache, regenerated automatically |
 | `backups/` | Use Home Assistant's backup system for full backups |
 | `.cloud/` | Cloud connection data, recreated on login |
-| `.storage/*` (except whitelist) | Most storage files are regenerated or contain transient state |
+| `.storage/*` (except Lovelace and core.config) | Most storage files are regenerated or contain transient state |
+
+Built-in protections also exclude Git metadata, Python and temporary caches,
+`backup/`, Node-RED credentials (`flows_cred.json`), ESPHome secrets
+(`esphome/secrets.yaml`), common audio/video files, IDE files, swap files, and OS
+metadata. These retain the protections previously supplied by the generated
+`.gitignore`, now enforced during synchronization.
 
 ### Default Exclude Patterns
 
@@ -174,7 +239,6 @@ exclude_patterns:
   - "home-assistant.log*"
   - "OZW_Log.txt"
   - "tts/*"
-  - ".storage/*"
   - "backups/*"
   - ".cloud/*"
 ```
@@ -242,6 +306,34 @@ username: "username"
 password: "ghp_xxxxxxxxxxxxxxxxxxxx"
 backup_interval_hours: 12
 ```
+
+### GitHub-managed configuration with deployment infrastructure
+
+For a `/config` containing configuration alongside deployment repositories and
+SSH keys, use an explicit allowlist and exclusions:
+
+```yaml
+repository_url: "git@github.com:username/ha-config-backup.git"
+include_patterns:
+  - automations.yaml
+  - scripts.yaml
+  - configuration.yaml
+  - blueprints/*
+  - custom_components/*
+  - themes/*
+  - www/*
+exclude_patterns:
+  - .ha-deploy/
+  - .ssh/
+  - deploy/
+  - secrets.yaml
+  - '*.pre-deploy'
+  - '*.pub'
+```
+
+The deployment directories and keys are excluded even if you later add
+`*.yaml` or `*` to the allowlist. Previously committed excluded files are removed
+from the branch on the next backup, while remaining in older commits.
 
 ### Exclude secrets
 

@@ -1,0 +1,17 @@
+name: Filtering tests
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  filtering:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install local test dependencies
+        run: sudo apt-get update && sudo apt-get install -y rsync jq
+      - name: Check Bash syntax
+        run: bash -n git-backup/rootfs/run.sh
+      - name: Run local Git and rsync integration tests
+        run: python3 -m unittest discover -s tests -v

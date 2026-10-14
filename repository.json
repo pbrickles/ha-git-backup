@@ -1,5 +1,5 @@
 {
-  "name": "Git Config Backup Add-ons",
-  "url": "https://github.com/sttts/ha-git-backup",
-  "maintainer": "Stefan Schimanski <stefan.schimanski@gmail.com>"
+  "name": "Git Config Backup \u2014 Filtering Test",
+  "url": "https://github.com/pbrickles/ha-git-backup",
+  "maintainer": "pbrickles"
 }
