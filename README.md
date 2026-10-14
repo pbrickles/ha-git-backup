@@ -1,4 +1,4 @@
-> **Filtering test fork — v1.0.14-test.1**
+> **Filtering test fork — v1.0.14-test.2**
 >
 > Add `https://github.com/pbrickles/ha-git-backup` in Home Assistant:
 > Settings → Add-ons → Add-on Store → ⋮ → Repositories. Install

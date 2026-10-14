@@ -212,6 +212,35 @@ do_backup test
                           '.storage/lovelace.dashboard', '.storage/core.config'})
         self.assertFalse((self.repo / '.gitignore').exists())
 
+    def test_repository_managed_files_preserved(self):
+        managed = {'.github/workflows/ha-sync-pr.yml': 'repository workflow\n',
+                   '.gitignore': 'repository-only-ignore\n'}
+        for name, content in managed.items():
+            self.put(name, content, destination=True)
+        self.git('add', '-A')
+        self.git('commit', '-qm', 'Repository-managed files')
+        head = self.git('rev-parse', 'HEAD')
+        for includes in [[], ['*.yaml', '*.yml'], ['*']]:
+            with self.subTest(includes=includes):
+                self.configure(includes, [])
+                self.backup()
+                for name, content in managed.items():
+                    self.assertTrue((self.repo / name).exists(), name)
+                    self.assertEqual((self.repo / name).read_text(), content)
+                self.assertEqual(head, self.git('rev-parse', 'HEAD'))
+        # Even source-side collisions must not overwrite repository-owned files.
+        for name in managed:
+            self.put(name, 'source collision\n')
+        self.backup()
+        for name, content in managed.items():
+            self.assertEqual((self.repo / name).read_text(), content)
+        self.assertEqual(head, self.git('rev-parse', 'HEAD'))
+        self.configure(['*'], ['.github/', '.gitignore'])
+        self.backup()
+        for name, content in managed.items():
+            self.assertEqual((self.repo / name).read_text(), content)
+        self.assertEqual(head, self.git('rev-parse', 'HEAD'))
+
 
 if __name__ == '__main__':
     unittest.main()

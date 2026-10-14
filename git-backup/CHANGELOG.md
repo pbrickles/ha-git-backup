@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.0.14-test.2] - 2026-10-14
+
+### Fixed
+
+- Preserve repository-owned `.github/` workflows against synchronization deletion and source overwrites.
+- Add regression coverage for repository-managed workflows and `.gitignore` across empty and broad allowlists.
+
 ## [1.0.14-test.1] - 2026-10-14
 
 ### Fixed

@@ -223,10 +223,13 @@ build_rsync_args() {
     local -a includes=()
 
     # Hide source Git metadata and protect destination metadata, even when a
-    # user requests everything. Preserve the repository owner's root .gitignore.
+    # user requests everything. Root .github and .gitignore belong to the
+    # repository owner, not the Home Assistant configuration mirror.
     RSYNC_ARGS+=("--filter=P .git" "--filter=P **/.git/***"
                  "--filter=H .git" "--filter=H **/.git/***"
-                 "--filter=P /.gitignore" "--filter=H /.gitignore")
+                 "--filter=P /.gitignore" "--filter=H /.gitignore"
+                 "--filter=P /.github" "--filter=P /.github/***"
+                 "--filter=H /.github" "--filter=H /.github/***")
 
     # Explicit exclusions win on both sides: hide from the sender and mark as
     # deletable on the receiver. Descendants must also be deletable when the

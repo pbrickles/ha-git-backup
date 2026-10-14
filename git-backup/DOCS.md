@@ -192,8 +192,13 @@ files from the branch, add explicit exclusions. This avoids erasing backups when
 an inclusion is temporarily changed.
 
 Git metadata named `.git` is never copied or deleted, including nested metadata.
-The repository's root `.gitignore` is also left untouched: the add-on no longer
-generates it or copies `/config/.gitignore` over it. Existing ignore rules remain
+The repository's root `.github/` directory and `.gitignore` are also left
+untouched, even with broad patterns or explicit exclusions. This preserves
+repository-managed workflows such as `.github/workflows/ha-sync-pr.yml`; source
+copies cannot overwrite them. The add-on no longer generates `.gitignore` or
+copies `/config/.gitignore` over it. These paths are reserved for repository
+management. Other repository-only files that match the active selection can
+still be deleted if absent from `/config`. Existing ignore rules remain
 an additional Git staging restriction, so an ignored untracked file may be copied
 without being committed. Review any old generated ignore file manually if its
 rules no longer suit your repository. Changing filter options alone does not
