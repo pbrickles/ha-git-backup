@@ -13,6 +13,10 @@ SSH_DIR="/data/ssh"
 STATUS_FILE="/data/status.json"
 WEBUI_DIR="/data/webui"
 
+# Supervisor may omit HOME. Give Git an explicit persistent global config path
+# for credentials/safe.directory; commit identity is repository-local.
+export GIT_CONFIG_GLOBAL="${GIT_CONFIG_GLOBAL:-/data/gitconfig}"
+
 # ------------------------------------------------------------------------------
 # Helper functions
 # ------------------------------------------------------------------------------
@@ -180,38 +184,86 @@ setup_git_credentials() {
 # ------------------------------------------------------------------------------
 setup_repository() {
     log_info "Setting up repository..."
+    git check-ref-format --branch "$BRANCH" >/dev/null || return 1
+    git config --global --add safe.directory "$REPO_DIR" || return 1
 
-    # Configure git user (with fallbacks for empty values)
-    local git_name="${COMMIT_USER_NAME:-Home Assistant}"
-    local git_email="${COMMIT_USER_EMAIL:-homeassistant@local}"
-    [ -z "$git_name" ] && git_name="Home Assistant"
-    [ -z "$git_email" ] && git_email="homeassistant@local"
+    if [ ! -d "$REPO_DIR/.git" ]; then
+        # Initialize first so empty remotes and branches not yet published use
+        # the same safe synchronization path as an existing repository.
+        mkdir -p "$REPO_DIR" || return 1
+        git -C "$REPO_DIR" init || return 1
+        git -C "$REPO_DIR" remote add origin "$REPOSITORY_URL" || return 1
+    fi
+    cd "$REPO_DIR" || return 1
+    configure_git_identity || return 1
+    synchronize_repository
+}
 
-    git config --global user.name "$git_name"
-    git config --global user.email "$git_email"
-    git config --global init.defaultBranch "$BRANCH"
-    git config --global --add safe.directory "$REPO_DIR"
+configure_git_identity() {
+    git config --local user.name "${COMMIT_USER_NAME:-Home Assistant}" || return 1
+    git config --local user.email "${COMMIT_USER_EMAIL:-homeassistant@local}"
+}
 
-    if [ -d "$REPO_DIR/.git" ]; then
-        log_info "Repository already exists, fetching updates..."
-        cd "$REPO_DIR"
-        git fetch origin "$BRANCH" 2>/dev/null || log_warn "Could not fetch from remote"
+synchronize_repository() {
+    cd "$REPO_DIR" || return 1
+    git check-ref-format --branch "$BRANCH" >/dev/null || return 1
+
+    # Never stash, reset, or overwrite work left by a person or failed operation.
+    local state dirty remote_status
+    for state in MERGE_HEAD CHERRY_PICK_HEAD REVERT_HEAD rebase-merge rebase-apply; do
+        if [ -e "$(git rev-parse --git-path "$state")" ]; then
+            log_error "Unfinished Git operation ($state); resolve it before backing up"
+            return 1
+        fi
+    done
+    dirty=$(git status --porcelain --untracked-files=all) || return 1
+    if [ -n "$dirty" ]; then
+        log_error "Repository has uncommitted changes; commit or resolve them before backing up"
+        return 1
+    fi
+
+    # Exit 2 means a reachable remote has no such branch (including empty repos).
+    # Other failures must not be mistaken for an empty remote.
+    if git ls-remote --exit-code --heads origin "refs/heads/$BRANCH" >/dev/null; then
+        remote_status=0
+        git fetch origin "refs/heads/$BRANCH:refs/remotes/origin/$BRANCH" || return 1
     else
-        log_info "Cloning repository..."
-        mkdir -p "$REPO_DIR"
-
-        if git clone --branch "$BRANCH" --single-branch "$REPOSITORY_URL" "$REPO_DIR" 2>/dev/null; then
-            log_info "Repository cloned successfully"
-        else
-            log_info "Could not clone (may be empty repo), initializing..."
-            cd "$REPO_DIR"
-            git init
-            git checkout -b "$BRANCH"
-            git remote add origin "$REPOSITORY_URL" 2>/dev/null || git remote set-url origin "$REPOSITORY_URL"
+        remote_status=$?
+        if [ "$remote_status" -ne 2 ]; then
+            log_error "Could not read remote branch; backup aborted"
+            return 1
         fi
     fi
 
-    cd "$REPO_DIR"
+    if git show-ref --verify --quiet "refs/heads/$BRANCH"; then
+        git checkout "$BRANCH" || return 1
+    elif [ "$remote_status" -eq 0 ]; then
+        git checkout -b "$BRANCH" --track "refs/remotes/origin/$BRANCH" || return 1
+    else
+        # A new branch starts from the current committed HEAD, or is unborn
+        # when the repository is empty. No existing branch is reset.
+        git checkout -b "$BRANCH" || return 1
+    fi
+
+    [ "$remote_status" -eq 0 ] || return 0
+    local remote_ref="refs/remotes/origin/$BRANCH"
+    if git merge-base --is-ancestor "$remote_ref" HEAD; then
+        return 0  # Equal or ahead: keep local commits for the next push.
+    elif git merge-base --is-ancestor HEAD "$remote_ref"; then
+        git merge --ff-only "$remote_ref" || return 1
+    else
+        log_warn "Local and remote branches diverged; merging without rewriting history"
+        if ! git merge --no-edit --no-ff "$remote_ref"; then
+            if git rev-parse --verify -q MERGE_HEAD >/dev/null; then
+                git merge --abort || {
+                    log_error "Could not abort merge; manual recovery required"
+                    return 1
+                }
+            fi
+            log_error "Remote merge failed or conflicted; resolve branch divergence manually. Backup aborted"
+            return 1
+        fi
+    fi
 }
 
 # ------------------------------------------------------------------------------
@@ -329,7 +381,12 @@ do_backup() {
     log_info "Starting backup (trigger: $trigger_source)..."
     update_status "running" "Backup in progress..."
 
-    cd "$REPO_DIR"
+    cd "$REPO_DIR" || return 1
+    configure_git_identity || return 1
+    if ! synchronize_repository; then
+        update_status "error" "Repository synchronization failed"
+        return 1
+    fi
 
     # File selection is independent of Git's ignore rules.
     local -a RSYNC_ARGS=()
@@ -342,32 +399,36 @@ do_backup() {
     fi
 
     # Stage all changes
-    git add -A
+    git add -A || return 1
 
     # Check if there are changes to commit
     if git diff --cached --quiet; then
         log_info "No changes to commit"
+    else
+
+        # Create commit message with date and file summary
+        local date_str
+        date_str=$(date '+%Y-%m-%d %H:%M:%S')
+        local file_summary
+        file_summary=$(generate_file_summary)
+        local message
+        message="$COMMIT_MESSAGE"
+        message="${message//\{date\}/$date_str}"
+        message="${message//\{files\}/$file_summary}"
+
+        # Commit
+        log_info "Committing changes..."
+        git commit -m "$message" || return 1
+    fi
+
+    if ! git rev-parse --verify HEAD >/dev/null 2>&1; then
         update_status "idle" "No changes detected"
         return 0
     fi
 
-    # Create commit message with date and file summary
-    local date_str
-    date_str=$(date '+%Y-%m-%d %H:%M:%S')
-    local file_summary
-    file_summary=$(generate_file_summary)
-    local message
-    message="$COMMIT_MESSAGE"
-    message="${message//\{date\}/$date_str}"
-    message="${message//\{files\}/$file_summary}"
-
-    # Commit
-    log_info "Committing changes..."
-    git commit -m "$message"
-
     # Push
     log_info "Pushing to remote..."
-    if git push -u origin "$BRANCH" 2>&1; then
+    if git push origin "HEAD:refs/heads/$BRANCH" 2>&1; then
         local last_commit
         last_commit=$(git log -1 --oneline)
         log_info "Backup completed: $last_commit"

@@ -68,6 +68,38 @@ For HTTPS authentication:
 | `repository_url` | *(required)* | Git repository URL. Use SSH format (`git@github.com:user/repo.git`) or HTTPS (`https://github.com/user/repo.git`) |
 | `branch` | `main` | Git branch to use for backups |
 
+### Branch synchronization and push retries
+
+At setup and before every backup, the add-on checks out the configured branch
+and fetches its current remote tip. Existing local branches are retained; a
+remote-only branch gets a local tracking branch. If the branch does not exist
+on either side, it starts from the current committed HEAD (or empty history in
+a new repository) and is published on the first successful backup with commits.
+
+Remote advances are fast-forwarded when possible. Diverged branches are merged
+with a merge commit, preserving both histories. A conflicting merge is aborted
+and reported as an error; resolve the divergence manually before retrying.
+Unrelated histories and rejected remote-tracking updates also stop the backup.
+No force-push, automatic stash, rebase, or history reset is performed.
+
+Uncommitted tracked or untracked changes and unfinished Git operations stop the
+backup before branch switching or copying. Commit or resolve that work manually.
+A failed push retains local commits. Every subsequent successful synchronization
+attempts to push them, even if no files have changed since the last backup.
+If the remote advances between fetch and push, the rejected push is reported;
+the next backup fetches and integrates the new commits before retrying.
+
+Remote commits are integrated before `/config` is mirrored. Home Assistant is
+still authoritative for selected configuration files; normal filtering and
+source-deletion rules apply after integration. Repository-owned `.github/` and
+root `.gitignore` remain protected, including changes fetched from GitHub.
+
+Commit author name and email are set in the backup repository itself, so they
+also apply to merge commits. Git's global configuration uses
+`/data/gitconfig` (or an existing `GIT_CONFIG_GLOBAL` override), allowing Git to
+operate when the add-on environment has no `HOME`. SSH and HTTPS credential
+selection are otherwise unchanged.
+
 ### Authentication
 
 | Option | Default | Description |

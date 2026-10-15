@@ -1,5 +1,14 @@
 # Changelog
 
+## Unreleased
+
+### Fixed
+
+- Switch to the configured backup branch and integrate remote advances before copying configuration.
+- Merge divergence without rewriting history; abort on conflicts, unfinished Git operations, or uncommitted changes.
+- Retry outstanding pushes even when a backup produces no new commit.
+- Use repository-local author identity and an explicit global Git configuration path when HOME is absent.
+
 ## [1.0.14-test.2] - 2026-10-14
 
 ### Fixed

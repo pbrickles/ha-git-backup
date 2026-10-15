@@ -1,5 +1,6 @@
 """Local integration tests: python3 -m unittest discover -s tests -v."""
 import json
+import os
 from pathlib import Path
 import subprocess
 import tempfile
@@ -20,8 +21,8 @@ class FilteringTests(unittest.TestCase):
         self.options = self.root / 'options.json'
         self.configure([], [])
         self.git('init', '-q')
-        self.git('config', 'user.name', 'Test')
-        self.git('config', 'user.email', 'test@example.invalid')
+        self.git('config', 'user.name', 'Backup Tester')
+        self.git('config', 'user.email', 'backup@example.invalid')
         subprocess.run(['git', 'init', '--bare', '-q', str(self.root / 'remote')], check=True)
         self.git('remote', 'add', 'origin', str(self.root / 'remote'))
         branch = self.git('symbolic-ref', '--short', 'HEAD')
@@ -39,23 +40,31 @@ class FilteringTests(unittest.TestCase):
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(content)
 
-    def backup(self, success=True, fail_sync=False):
+    def backup(self, success=True, fail_sync=False, branch=None, action="do_backup test", unset_home=False):
         # Load actual functions without starting the add-on or accessing /data.
         script = SCRIPT.read_text()
         helpers = script[script.index('get_config_array()'):script.index('# Load configuration')]
-        functions = script[script.index('build_rsync_args()'):script.index('# File Watcher')]
+        functions = script[script.index('setup_repository()'):script.index('# File Watcher')]
         harness = 'set -e\n' + helpers + '\n' + functions + '''
 REPO_DIR=$1
 HA_CONFIG=$2
 CONFIG_PATH=$3
-BRANCH=$(git -C "$REPO_DIR" symbolic-ref --short HEAD)
+BRANCH=$4
+REPOSITORY_URL=$5
+COMMIT_USER_NAME='Backup Tester'
+COMMIT_USER_EMAIL='backup@example.invalid'
 COMMIT_MESSAGE='Backup: {files}'
 update_status() { :; }
-do_backup test
-'''
+''' + action + '\n'
         if fail_sync:
             harness = harness.replace('do_backup test', 'rsync() { return 23; }\ndo_backup test')
-        result = subprocess.run(['bash', '-c', harness, 'test', str(self.repo), str(self.source), str(self.options)],
+        env = os.environ.copy()
+        env['GIT_CONFIG_GLOBAL'] = str(self.root / 'gitconfig')
+        if unset_home:
+            env.pop('HOME', None)
+        result = subprocess.run(['bash', '-c', harness, 'test', str(self.repo), str(self.source),
+                                 str(self.options), branch or self.git('symbolic-ref', '--short', 'HEAD'),
+                                 str(self.root / 'remote')], env=env,
                                 capture_output=True, text=True)
         if success:
             self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
@@ -112,6 +121,8 @@ do_backup test
 
     def test_ignore_preserved_and_no_repeat_commit(self):
         self.put('.gitignore', 'user ignored.yaml\n', destination=True)
+        self.git('add', '.gitignore')
+        self.git('commit', '-qm', 'Repository ignore rules')
         self.put('.gitignore', 'different\n')
         self.put('configuration.yaml')
         self.put('user ignored.yaml')
