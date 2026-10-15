@@ -1,5 +1,5 @@
 name: Git Config Backup (Filtering Test)
-version: "1.0.14-test.2"
+version: "1.0.14-test.3"
 slug: git_config_backup
 description: Automatically backup Home Assistant configuration to a Git repository
 url: "https://github.com/pbrickles/ha-git-backup"
