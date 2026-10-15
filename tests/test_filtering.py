@@ -32,6 +32,10 @@ class FilteringTests(unittest.TestCase):
     def git(self, *args):
         return subprocess.check_output(['git', '-C', str(self.repo), *args], text=True).strip()
 
+    def backup_files(self):
+        return '\n'.join(name for name in self.git('ls-files').splitlines()
+                         if name != '.ha-backup/managed-files.json')
+
     def configure(self, includes, excludes):
         self.options.write_text(json.dumps(dict(include_patterns=includes, exclude_patterns=excludes)))
 
@@ -40,7 +44,7 @@ class FilteringTests(unittest.TestCase):
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(content)
 
-    def backup(self, success=True, fail_sync=False, branch=None, action="do_backup test", unset_home=False):
+    def backup(self, success=True, fail_sync=False, branch=None, action="do_backup test", unset_home=False, extra_env=None, background=False):
         # Load actual functions without starting the add-on or accessing /data.
         script = SCRIPT.read_text()
         helpers = script[script.index('get_config_array()'):script.index('# Load configuration')]
@@ -54,18 +58,29 @@ REPOSITORY_URL=$5
 COMMIT_USER_NAME='Backup Tester'
 COMMIT_USER_EMAIL='backup@example.invalid'
 COMMIT_MESSAGE='Backup: {files}'
+MANAGED_SYNC_SCRIPT=$6
 update_status() { :; }
 ''' + action + '\n'
-        if fail_sync:
-            harness = harness.replace('do_backup test', 'rsync() { return 23; }\ndo_backup test')
         env = os.environ.copy()
+        if extra_env:
+            env.update(extra_env)
+        if fail_sync:
+            bindir = self.root / 'failing-bin'
+            bindir.mkdir(exist_ok=True)
+            rsync = bindir / 'rsync'
+            rsync.write_text('#!/bin/sh\nexit 23\n')
+            rsync.chmod(0o755)
+            env['PATH'] = str(bindir) + os.pathsep + env['PATH']
         env['GIT_CONFIG_GLOBAL'] = str(self.root / 'gitconfig')
         if unset_home:
             env.pop('HOME', None)
-        result = subprocess.run(['bash', '-c', harness, 'test', str(self.repo), str(self.source),
+        command = ['bash', '-c', harness, 'test', str(self.repo), str(self.source),
                                  str(self.options), branch or self.git('symbolic-ref', '--short', 'HEAD'),
-                                 str(self.root / 'remote')], env=env,
-                                capture_output=True, text=True)
+                                 str(self.root / 'remote'), str(SCRIPT.with_name('managed_sync.py'))]
+        if background:
+            return subprocess.Popen(command, env=env, stdout=subprocess.PIPE,
+                                    stderr=subprocess.PIPE, text=True, start_new_session=True)
+        result = subprocess.run(command, env=env, capture_output=True, text=True)
         if success:
             self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         return result
@@ -95,7 +110,7 @@ update_status() { :; }
         self.configure(['*.yaml'], ['secrets.yaml', '.ha-deploy/'])
         (self.source / 'configuration.yaml').unlink()
         self.backup()
-        self.assertEqual(self.git('ls-files'), '')
+        self.assertEqual(self.backup_files(), '')
         self.assertTrue((self.source / 'secrets.yaml').exists())
         self.assertTrue((self.source / '.ha-deploy/repository/old.yaml').exists())
         self.assertFalse((self.repo / '.ha-deploy').exists())
@@ -116,7 +131,7 @@ update_status() { :; }
         self.backup()
         self.assertEqual((self.repo / '.git/config').read_bytes(), metadata)
         self.assertFalse((self.repo / 'nested/.git').exists())
-        self.assertEqual(set(self.git('ls-files').splitlines()),
+        self.assertEqual(set(self.backup_files().splitlines()),
                          {'ordinary.txt', '.storage/lovelace.dashboard', '.storage/core.config'})
 
     def test_ignore_preserved_and_no_repeat_commit(self):
@@ -131,7 +146,7 @@ update_status() { :; }
         self.backup()
         self.assertEqual(head, self.git('rev-parse', 'HEAD'))
         self.assertEqual((self.repo / '.gitignore').read_text(), 'user ignored.yaml\n')
-        self.assertNotIn('user ignored.yaml', self.git('ls-files'))
+        self.assertNotIn('user ignored.yaml', self.backup_files())
 
     def test_allowlist_change_preserves_old_backup(self):
         self.put('one.yaml')
@@ -151,7 +166,7 @@ update_status() { :; }
         self.configure(['themes/*', '!.storage/lovelace*', '!.storage/core.config'],
                        ['themes/my theme/deep/file with spaces.yaml', '.storage/*'])
         self.backup()
-        self.assertEqual(self.git('ls-files'), '')
+        self.assertEqual(self.backup_files(), '')
 
     def test_matching_include_exclude_and_spaces(self):
         self.put('file with spaces.yaml')
@@ -160,19 +175,20 @@ update_status() { :; }
         self.put('key.pub')
         self.configure(['*.yaml', '*'], ['blocked.yaml', '*.pre-deploy', '*.pub'])
         self.backup()
-        self.assertEqual(self.git('ls-files'), 'file with spaces.yaml')
+        self.assertEqual(self.backup_files(), 'file with spaces.yaml')
 
-    def test_builtins_remove_previously_tracked_files(self):
+    def test_builtins_preserve_files_without_verified_ownership(self):
         for name in ['data.db', '.storage/auth', 'nested/.git/config']:
             self.put(name, destination=True)
         self.git('add', '-A')
         self.git('commit', '-qm', 'Previously tracked protected files')
         self.configure(['*'], [])
         self.backup()
-        self.assertEqual(self.git('ls-files'), '')
+        self.assertEqual(set(self.backup_files().splitlines()),
+                         {'data.db', '.storage/auth'})
         self.assertEqual((self.repo / 'nested/.git/config').read_text(), 'fixture\n')
-        self.assertFalse((self.repo / 'data.db').exists())
-        self.assertFalse((self.repo / '.storage/auth').exists())
+        self.assertTrue((self.repo / 'data.db').exists())
+        self.assertTrue((self.repo / '.storage/auth').exists())
 
     def test_sync_failure_aborts_before_staging(self):
         self.put('configuration.yaml')
@@ -190,7 +206,7 @@ update_status() { :; }
         self.put('.storage/auth')
         self.configure(['!.storage/lovelace*', '!.storage/core.config'], [])
         self.backup()
-        self.assertEqual(set(self.git('ls-files').splitlines()),
+        self.assertEqual(set(self.backup_files().splitlines()),
                          {'.storage/lovelace.dashboard', '.storage/core.config'})
 
     def test_directory_exclusions_at_any_depth(self):
@@ -199,7 +215,7 @@ update_status() { :; }
             self.put(name)
         self.configure(['themes/'], ['.ssh/'])
         self.backup()
-        self.assertEqual(self.git('ls-files'), 'nested/themes/sub/theme.yaml')
+        self.assertEqual(self.backup_files(), 'nested/themes/sub/theme.yaml')
         self.configure([], [])
         self.put('nested/.ha-deploy/deep/file.yaml')
         self.backup()
@@ -218,7 +234,7 @@ update_status() { :; }
                      '.storage/core.config', '.storage/auth', 'unselected.txt', 'data.db']:
             self.put(name)
         self.backup()
-        self.assertEqual(set(self.git('ls-files').splitlines()),
+        self.assertEqual(set(self.backup_files().splitlines()),
                          {'configuration.yaml', 'themes/deep/theme.css',
                           '.storage/lovelace.dashboard', '.storage/core.config'})
         self.assertFalse((self.repo / '.gitignore').exists())
@@ -230,6 +246,11 @@ update_status() { :; }
             self.put(name, content, destination=True)
         self.git('add', '-A')
         self.git('commit', '-qm', 'Repository-managed files')
+        # Bootstrap now records empty ownership in its own commit. Subsequent
+        # backups must still preserve repository files without extra commits.
+        self.backup()
+        self.assertEqual(json.loads((self.repo / '.ha-backup/managed-files.json').read_text()),
+                         {'version': 1, 'files': {}})
         head = self.git('rev-parse', 'HEAD')
         for includes in [[], ['*.yaml', '*.yml'], ['*']]:
             with self.subTest(includes=includes):

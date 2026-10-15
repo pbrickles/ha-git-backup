@@ -12,6 +12,7 @@ HA_CONFIG="/config"
 SSH_DIR="/data/ssh"
 STATUS_FILE="/data/status.json"
 WEBUI_DIR="/data/webui"
+MANAGED_SYNC_SCRIPT="/managed_sync.py"
 
 # Supervisor may omit HOME. Give Git an explicit persistent global config path
 # for credentials/safe.directory; commit identity is repository-local.
@@ -270,7 +271,7 @@ synchronize_repository() {
 # Build synchronization filters
 # ------------------------------------------------------------------------------
 build_rsync_args() {
-    RSYNC_ARGS=(-av --delete)
+    RSYNC_ARGS=(-a)
     local pattern
     local -a includes=()
 
@@ -281,11 +282,12 @@ build_rsync_args() {
                  "--filter=H .git" "--filter=H **/.git/***"
                  "--filter=P /.gitignore" "--filter=H /.gitignore"
                  "--filter=P /.github" "--filter=P /.github/***"
-                 "--filter=H /.github" "--filter=H /.github/***")
+                 "--filter=H /.github" "--filter=H /.github/***"
+                 "--filter=H /openspec" "--filter=H /openspec/***"
+                 "--filter=H /.ha-backup" "--filter=H /.ha-backup/***")
 
-    # Explicit exclusions win on both sides: hide from the sender and mark as
-    # deletable on the receiver. Descendants must also be deletable when the
-    # allowlist's final exclusion would otherwise protect them.
+    # Exclusions only select source files. Verified manifest ownership grants
+    # deletion authority; rsync never deletes repository contents.
     while IFS= read -r pattern; do
         [ -n "$pattern" ] || continue
         add_rsync_exclusion "$pattern"
@@ -303,6 +305,10 @@ build_rsync_args() {
     # Keep the historical storage exceptions, below explicit user exclusions.
     RSYNC_ARGS+=("--include=/.storage/lovelace*" "--include=/.storage/core.config")
     add_rsync_exclusion '/.storage/*'
+
+    if [ "${1:-selection}" = "exclusions" ]; then
+        return 0
+    fi
 
     while IFS= read -r pattern; do
         # Legacy defaults used gitignore negation here to mean inclusion.
@@ -340,8 +346,7 @@ add_rsync_exclusion() {
     if [[ "${pattern%/}" != */* ]]; then
         descendants="**/$descendants"
     fi
-    RSYNC_ARGS+=("--filter=R $pattern" "--filter=H $pattern"
-                 "--filter=R $descendants" "--filter=H $descendants")
+    RSYNC_ARGS+=("--filter=H $pattern" "--filter=H $descendants")
 }
 
 # ------------------------------------------------------------------------------
@@ -375,7 +380,16 @@ generate_file_summary() {
 # ------------------------------------------------------------------------------
 # Sync and Commit
 # ------------------------------------------------------------------------------
-do_backup() {
+do_backup() (
+    # Keep the descriptor open throughout synchronization, commit, and push.
+    # Children inherit it so an interrupted shell cannot unlock active work.
+    # Never unlink the file: every contender must lock the same inode. The old
+    # directory-based .backup-lock is deliberately unused after migration.
+    exec 9>"${REPO_DIR}.backup.lock" || return 1
+    if ! flock -n 9; then
+        log_error "Another backup is running (or the backup lock could not be acquired)"
+        return 1
+    fi
     local trigger_source="${1:-manual}"
 
     log_info "Starting backup (trigger: $trigger_source)..."
@@ -388,11 +402,14 @@ do_backup() {
         return 1
     fi
 
-    # File selection is independent of Git's ignore rules.
-    local -a RSYNC_ARGS=()
+    # Build both classifications with the same rsync pattern semantics.
+    local -a RSYNC_ARGS=() SELECTION_ARGS=() EXCLUSION_ARGS=()
     build_rsync_args
-    log_info "Syncing configuration from $HA_CONFIG..."
-    if ! rsync "${RSYNC_ARGS[@]}" "$HA_CONFIG/" "$REPO_DIR/"; then
+    SELECTION_ARGS=("${RSYNC_ARGS[@]}")
+    build_rsync_args exclusions
+    EXCLUSION_ARGS=("${RSYNC_ARGS[@]}")
+    if ! python3 "$MANAGED_SYNC_SCRIPT" "$REPO_DIR" "$HA_CONFIG" "$CONFIG_PATH" \
+        "${#SELECTION_ARGS[@]}" "${SELECTION_ARGS[@]}" "${EXCLUSION_ARGS[@]}"; then
         log_error "Configuration synchronization failed; backup aborted"
         update_status "error" "Configuration synchronization failed"
         return 1
@@ -439,7 +456,7 @@ do_backup() {
         update_status "error" "Push failed"
         return 1
     fi
-}
+)
 
 # ------------------------------------------------------------------------------
 # File Watcher (inotify)

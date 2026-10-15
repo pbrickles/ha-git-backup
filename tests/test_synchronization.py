@@ -39,6 +39,59 @@ class SynchronizationTests(unittest.TestCase):
         return subprocess.check_output(['git', '--git-dir', str(self.root / 'remote'),
                                         'rev-parse', f'refs/heads/{self.branch}'], text=True).strip()
 
+    def test_remote_development_files_survive_backup_and_source_deletion(self):
+        self.seed()
+        self.remote_change('new-development-tool/settings.yaml', 'Git-owned\n')
+        (self.source / 'configuration.yaml').unlink()
+        self.backup()
+        self.assertFalse((self.repo / 'configuration.yaml').exists())
+        self.assertEqual((self.repo / 'new-development-tool/settings.yaml').read_text(), 'Git-owned\n')
+        self.assertEqual(self.git('rev-parse', 'HEAD'), self.remote_head())
+
+    def test_remote_edit_of_managed_file_blocks_source_deletion(self):
+        self.seed()
+        remote = self.remote_change('configuration.yaml', 'Git-side development\n')
+        (self.source / 'configuration.yaml').unlink()
+        result = self.backup(success=False)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn('blocks deletion', result.stderr)
+        self.assertEqual(self.git('rev-parse', 'HEAD'), remote)
+        self.assertEqual(self.git('status', '--porcelain'), '')
+        self.assertEqual((self.repo / 'configuration.yaml').read_text(), 'Git-side development\n')
+
+    def test_fresh_clone_uses_committed_ownership(self):
+        self.seed()
+        import shutil
+        shutil.rmtree(self.repo)
+        subprocess.run(['git', 'clone', '-q', '--branch', self.branch,
+                        str(self.root / 'remote'), str(self.repo)], check=True)
+        (self.source / 'configuration.yaml').unlink()
+        self.backup()
+        self.assertFalse((self.repo / 'configuration.yaml').exists())
+        self.assertEqual(self.git('rev-parse', 'HEAD'), self.remote_head())
+
+    def test_manifest_merge_conflict_aborts_and_preserves_pending_backup(self):
+        self.seed()
+        import json
+        hook = self.root / 'remote/hooks/pre-receive'
+        hook.write_text('#!/bin/sh\nexit 1\n')
+        hook.chmod(0o755)
+        self.put('configuration.yaml', 'Pending local backup\n')
+        self.assertNotEqual(self.backup(success=False).returncode, 0)
+        pending = self.git('rev-parse', 'HEAD')
+        hook.unlink()
+        name = '.ha-backup/managed-files.json'
+        value = json.loads((self.peer / name).read_text())
+        value['files']['configuration.yaml']['fingerprint'] = '0' * 64
+        remote = self.remote_change(name, json.dumps(value, indent=2, sort_keys=True) + '\n')
+        result = self.backup(success=False)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn('conflict', (result.stdout + result.stderr).lower())
+        self.assertEqual(self.git('rev-parse', 'HEAD'), pending)
+        self.assertEqual(self.remote_head(), remote)
+        self.assertEqual(self.git('status', '--porcelain'), '')
+        self.assertEqual((self.repo / 'configuration.yaml').read_text(), 'Pending local backup\n')
+
     def test_switch_existing_branch(self):
         self.seed()
         self.git('branch', 'backup-test')

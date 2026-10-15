@@ -101,8 +101,8 @@ The main entry point orchestrates all functionality:
 │    └── main_loop()          # Scheduled backups    │
 │                                                     │
 │  do_backup()                                        │
-│    ├── generate_gitignore() # Create .gitignore    │
-│    ├── rsync                # Sync files           │
+│    ├── build_rsync_args()   # Select source files  │
+│    ├── managed_sync.py      # Verify/apply changes │
 │    ├── git add -A           # Stage changes        │
 │    ├── git commit           # Commit               │
 │    └── git push             # Push to remote       │
@@ -137,22 +137,11 @@ The main entry point orchestrates all functionality:
 
 ### 3. File Synchronization
 
-Uses `rsync` for efficient synchronization:
-
-```bash
-rsync -av --delete \
-    --exclude='.git/' \
-    --exclude='*.db' \
-    --exclude='*.log' \
-    # ... more excludes
-    /config/ /data/repository/
-```
-
-**Why rsync?**
-- Efficient incremental sync
-- Handles deletions (`--delete`)
-- Preserves timestamps
-- Built-in exclude patterns
+Rsync copies selected `/config` files into disposable staging without deletion.
+`managed_sync.py` preflights ownership and content conflicts, then applies exact
+file updates and verified deletions. The Git-tracked ownership manifest is
+committed with configuration changes. Unowned repository files are preserved.
+See the managed synchronization section below and the add-on DOCS.md.
 
 ### 4. Backup Triggers
 
@@ -223,7 +212,7 @@ Simple HTTP server for status and SSH key display:
 
 ### User-Configurable Exclusions
 
-Users can add patterns via `exclude_patterns` option using gitignore syntax.
+Users can add patterns via `exclude_patterns` option using rsync filter-pattern syntax.
 
 ### Secrets Handling
 
@@ -355,3 +344,17 @@ include_patterns:
 - [Home Assistant Backup Integration](https://www.home-assistant.io/integrations/backup/)
 - [Git Internals](https://git-scm.com/book/en/v2/Git-Internals-Plumbing-and-Porcelain)
 - [inotifywait Documentation](https://linux.die.net/man/1/inotifywait)
+
+
+## Managed synchronization (current implementation)
+
+`run.sh` compiles source-selection and exclusion-only rsync
+filters; `managed_sync.py` is the module responsible for ownership, migration,
+conflict preflight, and exact file application. Rsync copies into temporary
+snapshots without `--delete`. Historical managed paths are classified using the
+same filters over a synthetic tree, avoiding a second wildcard implementation.
+The Git-tracked `.ha-backup/managed-files.json` records fingerprints and is
+committed with configuration changes. It is loaded after Git synchronization;
+missing state bootstraps without deletions and invalid state stops the backup.
+The branch synchronization and push-retry implementation remains unchanged.
+See the add-on DOCS.md for ownership, exclusion, approval, and failure semantics.

@@ -1,5 +1,5 @@
 name: Git Config Backup (Filtering Test)
-version: "1.0.14-test.3"
+version: "1.0.14-test.4"
 slug: git_config_backup
 description: Automatically backup Home Assistant configuration to a Git repository
 url: "https://github.com/pbrickles/ha-git-backup"
@@ -65,6 +65,8 @@ options:
     - "!.storage/lovelace*"
     - "!.storage/core.config"
 
+  adoption_approvals: []
+
 schema:
   repository_url: str?
   branch: str
@@ -86,6 +88,10 @@ schema:
     - str
   include_patterns:
     - str
+  adoption_approvals:
+    - path: str
+      repository_fingerprint: str
+      source_fingerprint: str
 
 # Enable Ingress for web UI to view SSH public key and status
 ingress: true

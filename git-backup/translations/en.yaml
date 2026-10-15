@@ -1,7 +1,7 @@
 configuration:
   repository_url:
     name: Repository URL
-    description: Git repository URL (HTTPS or SSH). Example: https://github.com/user/repo.git or git@github.com:user/repo.git
+    description: "Git repository URL (HTTPS or SSH). Example: https://github.com/user/repo.git or git@github.com:user/repo.git"
   branch:
     name: Branch
     description: Git branch to use for backups
@@ -49,7 +49,10 @@ configuration:
     description: Optional cron expression for scheduled backups (e.g., "0 2 * * *" for 2 AM daily)
   exclude_patterns:
     name: Exclude Patterns
-    description: Rsync-style exclusion patterns; override inclusions and remove previously backed-up matches
+    description: Rsync-style exclusion patterns; override inclusions; remove matches only with verified backup ownership
   include_patterns:
     name: Include Patterns
     description: File allowlist (empty includes all); directory patterns include nested contents
+  adoption_approvals:
+    name: File Adoption Approvals
+    description: Exact path and repository/source fingerprints approving a conflicting file adoption; remove after successful adoption

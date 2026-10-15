@@ -2,6 +2,18 @@
 
 ## Unreleased
 
+### Added
+
+- Git-tracked file ownership manifest with mode/content fingerprints and explicit, fingerprint-bound adoption approvals.
+- Migration, manifest corruption, scoped deletion, source failure, path collision, fresh-clone, and Git conflict regressions.
+
+### Changed
+
+- Replace repository-wide rsync deletion with staged copying and exact, verified managed-file deletions.
+- Preserve all unowned repository files, including matches of explicit exclusions; reserve OpenSpec and backup metadata alongside workflows and ignore rules.
+- Refuse conflicting adoptions, independent Git edits, and unsafe file/directory replacements before applying the backup plan.
+- Serialize backup triggers while retaining branch synchronization and pending-push retries.
+
 ### Fixed
 
 - Switch to the configured backup branch and integrate remote advances before copying configuration.

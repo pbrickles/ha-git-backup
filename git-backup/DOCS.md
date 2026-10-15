@@ -89,10 +89,10 @@ attempts to push them, even if no files have changed since the last backup.
 If the remote advances between fetch and push, the rejected push is reported;
 the next backup fetches and integrates the new commits before retrying.
 
-Remote commits are integrated before `/config` is mirrored. Home Assistant is
-still authoritative for selected configuration files; normal filtering and
-source-deletion rules apply after integration. Repository-owned `.github/` and
-root `.gitignore` remain protected, including changes fetched from GitHub.
+Remote commits are integrated before managed configuration synchronization.
+Selected source files are synchronized subject to ownership and conflict checks;
+source deletions apply only to verified managed files. Repository-owned files
+remain protected, including changes fetched from GitHub.
 
 Commit author name and email are set in the backup repository itself, so they
 also apply to merge commits. Git's global configuration uses
@@ -210,31 +210,97 @@ files. New defaults omit this conflicting entry. Inclusion patterns previously
 had no effect; enabling them now means files outside the configured allowlist
 will stop updating.
 
-### Deletions and existing repositories
+### Managed files, deletions, and migration
 
-When a previously tracked file becomes explicitly excluded (or matches a built-in
-protection), the next successful backup removes it from the backup working tree
-and stages its deletion. Originals in `/config` are never removed. Existing Git
-history is not rewritten, so earlier commits still contain that file.
+The add-on copies the filtered `/config` contents into disposable staging. Rsync
+never runs `--delete` against the Git repository. A Git-tracked ownership manifest
+at `.ha-backup/managed-files.json` authorizes exact file updates and deletions.
+Each entry fingerprints the file's bytes and Git-relevant mode. The manifest is
+committed in the same backup commit as configuration changes, and follows the
+configured branch through fresh clones, remote synchronization, and push retries.
+Do not hand-edit it to claim ownership of repository-only files.
 
-Deleting a source file that matches the active selection deletes its backup.
-Narrowing an allowlist **retains** older backup files outside that allowlist,
-without updating them or reflecting subsequent source deletions. To remove those
-files from the branch, add explicit exclusions. This avoids erasing backups when
-an inclusion is temporarily changed.
+- New selected files are copied and recorded as managed. Selected existing files
+  with identical contents and mode are adopted automatically.
+- A selected existing file with conflicting contents requires explicit adoption
+  approval (below). The whole plan is checked before files are changed.
+- Only managed files whose destination still matches the recorded fingerprint
+  may be deleted. A source deletion deletes a managed backup while the path is
+  selected. Explicit exclusions and built-in exclusions remove only verified
+  managed backups; unowned repository files matching an exclusion are preserved.
+- Narrowing an allowlist retains older managed backups outside that allowlist,
+  including their ownership records. Re-expanding the allowlist resumes updates
+  and reflects source deletions. Explicit exclusions take precedence.
+- Git-side changes conflicting with a managed update or deletion stop the backup.
+  Review and reconcile the Git and Home Assistant versions before retrying.
+  Matching the source version is sufficient for a safe managed update.
+- Only empty parent directories are removed after deleting managed files. No
+  recursive directory replacement is allowed; file/directory collisions stop
+  the backup, preserving unmanaged descendants.
 
-Git metadata named `.git` is never copied or deleted, including nested metadata.
-The repository's root `.github/` directory and `.gitignore` are also left
-untouched, even with broad patterns or explicit exclusions. This preserves
-repository-managed workflows such as `.github/workflows/ha-sync-pr.yml`; source
-copies cannot overwrite them. The add-on no longer generates `.gitignore` or
-copies `/config/.gitignore` over it. These paths are reserved for repository
-management. Other repository-only files that match the active selection can
-still be deleted if absent from `/config`. Existing ignore rules remain
-an additional Git staging restriction, so an ignored untracked file may be copied
-without being committed. Review any old generated ignore file manually if its
-rules no longer suit your repository. Changing filter options alone does not
-rewrite `.gitignore`; commits occur only when tracked content changes.
+The first backup without a manifest performs no absence-based deletions. It
+adopts matching selected files, copies new ones, and preserves destination-only
+files, even when they match broad inclusion or exclusion patterns. Files already
+removed from `/config` before migration cannot be safely identified as old HA
+backups and may require one-time manual cleanup. A removed manifest returns to
+this conservative bootstrap behavior. A successful bootstrap always commits a
+valid manifest, even when its owned file set is empty; an empty manifest grants
+no deletion authority. An invalid manifest stops the backup without copying or
+deleting configuration files. Unsupported versions, duplicate
+keys, invalid fingerprints, unsafe paths, reserved paths, symlink manifests, and
+overlapping file/directory entries are rejected. Existing deletions in branch
+history are not repaired automatically.
+
+Root `.github/`, `.gitignore`, `openspec/`, and `.ha-backup/` are reserved for the
+repository owner and app metadata. Git metadata named `.git` is also reserved at
+any depth. Source copies cannot overwrite these paths, inclusions cannot adopt
+them, and exclusions cannot delete them. Other repository-only files are
+preserved automatically because the app has no ownership record for them; users
+do not need to enumerate all development directories.
+
+Git ignore rules remain an additional restriction: ignored untracked files are
+neither copied nor owned. The manifest must be permitted by `.gitignore`, or the
+backup stops before changing configuration files. Tracked files remain tracked
+regardless of later ignore rules. Exclusions do not purge historical Git commits.
+
+Source enumeration or rsync failures prevent all planned changes. The source
+must exist as a directory separate from the destination. An accessible but
+unexpectedly empty mount cannot be distinguished reliably from intentional
+source removals; verify mount health before running a backup. Symlinks are
+backed up as links, never traversed to adopt external contents. Destination
+symlink parents and file/directory collisions are rejected.
+
+Backups are serialized across startup, watcher, and manual triggers using
+`flock` on `/data/repository.backup.lock`. The lock is held through branch
+synchronization, commit, and push, and the OS releases it when the backup and
+its active child processes exit, including after forced termination. The lock
+file stays on disk; do not remove it. Legacy `.backup-lock` directories are no
+longer used and cannot block backups. Do not reset or clean the backup checkout.
+Partial application failures leave work for manual review; the existing
+dirty-worktree check prevents automatic retries
+from committing it. A failed push retains a clean local commit and is retried
+normally, even when no new configuration changes are found.
+
+### Approving a conflicting adoption
+
+An error identifies the exact path, `repository_fingerprint`, and
+`source_fingerprint`. Review both versions, then add that exact triple to the
+add-on options to approve replacing the Git version with the source version:
+
+```yaml
+adoption_approvals:
+  - path: configuration.yaml
+    repository_fingerprint: "<64-character fingerprint from the error>"
+    source_fingerprint: "<64-character fingerprint from the error>"
+```
+
+These are SHA-256 fingerprints of `Git-mode + NUL + bytes` (or symlink target
+bytes), not ordinary file-only checksums. Approvals use exact relative paths;
+no wildcard adoption is supported. Both fingerprints must still match when the
+backup runs. A stale approval cannot approve different contents. Remove the
+entry after successful adoption. Reserved paths and file/directory collisions
+cannot be approved. The default `adoption_approvals: []` approves no conflicts.
+
 
 Synchronization errors abort the backup before staging or committing.
 
@@ -369,7 +435,7 @@ exclude_patterns:
 ```
 
 The deployment directories and keys are excluded even if you later add
-`*.yaml` or `*` to the allowlist. Previously committed excluded files are removed
+`*.yaml` or `*` to the allowlist. Previously managed excluded files are removed
 from the branch on the next backup, while remaining in older commits.
 
 ### Exclude secrets

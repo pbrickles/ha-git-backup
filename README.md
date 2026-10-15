@@ -15,7 +15,7 @@
 > remove it to retain Lovelace and core.config backups.
 >
 > See [filtering documentation](git-backup/DOCS.md#filtering-semantics) for
-> precedence, allowlists, and removal of previously tracked excluded files.
+> precedence, allowlists, managed-file ownership, and safe migration.
 
 # Home Assistant Git Config Backup
 
